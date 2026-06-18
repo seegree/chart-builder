@@ -1,0 +1,80 @@
+/*
+ * Chart Builder -- strict ISO date handling (YYYY-MM-DD).
+ * Dates are represented as integer day numbers (days since 1970-01-01,
+ * computed with pure calendar arithmetic -- no Date object, no timezones).
+ * Calendar conversion uses Howard Hinnant's civil-date algorithms.
+ */
+if (typeof CB === "undefined") { var CB = {}; }
+
+CB.Dates = (function () {
+
+    var MONTH_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                       "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+    function isLeap(y) {
+        return (y % 4 === 0 && y % 100 !== 0) || (y % 400 === 0);
+    }
+
+    function daysInMonth(y, m) {
+        var d = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][m - 1];
+        if (m === 2 && isLeap(y)) { d = 29; }
+        return d;
+    }
+
+    // (y, m, d) -> days since 1970-01-01
+    function daysFromCivil(y, m, d) {
+        y -= (m <= 2) ? 1 : 0;
+        var era = Math.floor((y >= 0 ? y : y - 399) / 400);
+        var yoe = y - era * 400;
+        var doy = Math.floor((153 * (m + (m > 2 ? -3 : 9)) + 2) / 5) + d - 1;
+        var doe = yoe * 365 + Math.floor(yoe / 4) - Math.floor(yoe / 100) + doy;
+        return era * 146097 + doe - 719468;
+    }
+
+    // days since 1970-01-01 -> { y, m, d }
+    function civilFromDays(z) {
+        z += 719468;
+        var era = Math.floor((z >= 0 ? z : z - 146096) / 146097);
+        var doe = z - era * 146097;
+        var yoe = Math.floor((doe - Math.floor(doe / 1460) + Math.floor(doe / 36524) - Math.floor(doe / 146096)) / 365);
+        var y = yoe + era * 400;
+        var doy = doe - (365 * yoe + Math.floor(yoe / 4) - Math.floor(yoe / 100));
+        var mp = Math.floor((5 * doy + 2) / 153);
+        var d = doy - Math.floor((153 * mp + 2) / 5) + 1;
+        var m = mp + (mp < 10 ? 3 : -9);
+        return { y: y + ((m <= 2) ? 1 : 0), m: m, d: d };
+    }
+
+    function isISO(s) {
+        return /^\d{4}-\d{2}-\d{2}$/.test(CB.Util.trim(s));
+    }
+
+    // Strict parse: "YYYY-MM-DD" with a real calendar date. Returns the
+    // integer day number, or null when invalid.
+    function parseISO(s) {
+        s = CB.Util.trim(s);
+        var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+        if (!m) { return null; }
+        var y = parseInt(m[1], 10), mo = parseInt(m[2], 10), d = parseInt(m[3], 10);
+        if (mo < 1 || mo > 12) { return null; }
+        if (d < 1 || d > daysInMonth(y, mo)) { return null; }
+        return daysFromCivil(y, mo, d);
+    }
+
+    function formatISO(dayNum) {
+        var c = civilFromDays(dayNum);
+        function p2(v) { return (v < 10 ? "0" : "") + v; }
+        return c.y + "-" + p2(c.m) + "-" + p2(c.d);
+    }
+
+    return {
+        MONTH_SHORT: MONTH_SHORT,
+        isLeap: isLeap,
+        daysInMonth: daysInMonth,
+        daysFromCivil: daysFromCivil,
+        civilFromDays: civilFromDays,
+        isISO: isISO,
+        parseISO: parseISO,
+        formatISO: formatISO
+    };
+})();

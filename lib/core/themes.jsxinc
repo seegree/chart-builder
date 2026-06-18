@@ -1,0 +1,109 @@
+/*
+ * Chart Builder -- themes and color helpers.
+ * Colors are stored as hex strings; CB.Colors converts to AE's 0..1 RGB
+ * arrays. When a chart has more series than a theme defines, additional
+ * distinguishable colors are generated deterministically (golden-angle
+ * hue stepping), so no series is ever silently dropped.
+ */
+if (typeof CB === "undefined") { var CB = {}; }
+
+CB.Colors = (function () {
+
+    function hexToRgb(hex) {
+        var h = String(hex).replace(/^#/, "");
+        if (h.length === 3) {
+            h = h.charAt(0) + h.charAt(0) + h.charAt(1) + h.charAt(1) + h.charAt(2) + h.charAt(2);
+        }
+        var n = parseInt(h, 16);
+        if (isNaN(n) || h.length !== 6) { return [0, 0, 0]; }
+        return [
+            ((n >> 16) & 255) / 255,
+            ((n >> 8) & 255) / 255,
+            (n & 255) / 255
+        ];
+    }
+
+    function rgbToHex(rgb) {
+        function c(v) {
+            var s = Math.round(CB.Util.clamp(v, 0, 1) * 255).toString(16);
+            return s.length < 2 ? "0" + s : s;
+        }
+        return "#" + (c(rgb[0]) + c(rgb[1]) + c(rgb[2])).toUpperCase();
+    }
+
+    // h, s, v in [0,1] -> [r,g,b] in [0,1]
+    function hsvToRgb(h, s, v) {
+        var i = Math.floor(h * 6) % 6;
+        var f = h * 6 - Math.floor(h * 6);
+        var p = v * (1 - s);
+        var q = v * (1 - f * s);
+        var t = v * (1 - (1 - f) * s);
+        switch (i) {
+            case 0: return [v, t, p];
+            case 1: return [q, v, p];
+            case 2: return [p, v, t];
+            case 3: return [p, q, v];
+            case 4: return [t, p, v];
+            default: return [v, p, q];
+        }
+    }
+
+    return { hexToRgb: hexToRgb, rgbToHex: rgbToHex, hsvToRgb: hsvToRgb };
+})();
+
+CB.Themes = (function () {
+
+    var THEMES = [
+        {
+            name: "Midnight",
+            bg: "#0F1115", text: "#F2F4F8", grid: "#262B33", axis: "#8A93A3",
+            series: ["#4FC3F7", "#FFB74D", "#81C784", "#E57373", "#BA68C8", "#FFD54F"]
+        },
+        {
+            name: "Light",
+            bg: "#FFFFFF", text: "#1A1A1A", grid: "#E3E6EA", axis: "#6B7280",
+            series: ["#2563EB", "#F59E0B", "#10B981", "#EF4444", "#8B5CF6", "#0D9488"]
+        },
+        {
+            name: "Editorial",
+            bg: "#FAF6EF", text: "#22211F", grid: "#E5DFD2", axis: "#6F6A5F",
+            series: ["#C84B31", "#2D6A4F", "#1D3557", "#B08968", "#6D597A", "#E9C46A"]
+        },
+        {
+            name: "MathWorks",
+            bg: "#001C47", text: "#FFFFFF", grid: "#005487", axis: "#00A9E0",
+            series: ["#0076A8", "#00A9E0", "#B7312C", "#715091", "#48A23F", "#D78825"]
+        }
+    ];
+
+    function names() {
+        return CB.Util.map(THEMES, function (t) { return t.name; });
+    }
+
+    function byName(name) {
+        var i;
+        for (i = 0; i < THEMES.length; i++) {
+            if (THEMES[i].name === name) { return THEMES[i]; }
+        }
+        return THEMES[0];
+    }
+
+    // Series color i (0-based) as [r,g,b]. Beyond the theme palette,
+    // generates extra hues spaced by the golden angle so any series count
+    // gets a distinct color.
+    function seriesColor(theme, i) {
+        if (i < theme.series.length) {
+            return CB.Colors.hexToRgb(theme.series[i]);
+        }
+        var extra = i - theme.series.length;
+        var baseHue = (CB.Colors.hexToRgb(theme.series[0]))[0]; // loose seed from palette
+        var h = (baseHue + 0.137 + extra * 0.6180339887) % 1;
+        // Alternate saturation/value a little so neighbors differ even
+        // when hues land close.
+        var s = (extra % 2 === 0) ? 0.7 : 0.5;
+        var v = (extra % 3 === 0) ? 0.85 : 0.7;
+        return CB.Colors.hsvToRgb(h, s, v);
+    }
+
+    return { list: THEMES, names: names, byName: byName, seriesColor: seriesColor };
+})();

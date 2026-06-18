@@ -1,0 +1,151 @@
+/*
+ * Chart Builder -- CSV parser.
+ * RFC-4180 style: quoted fields, "" escapes, commas/newlines inside quotes.
+ * Fully empty lines are dropped. Headers must be unique and non-empty.
+ *
+ * parse(text) -> { headers: [...], rows: [[...], ...], rowLines: [...] }
+ * rowLines[i] is the 1-based source line a data row started on, for error
+ * messages. Throws CB.ValidationError on malformed input.
+ */
+if (typeof CB === "undefined") { var CB = {}; }
+
+CB.CSV = (function () {
+
+    function parse(text) {
+        if (text === null || text === undefined) {
+            throw new CB.ValidationError(["CSV file is empty or unreadable."]);
+        }
+        text = String(text);
+        if (text.charCodeAt(0) === 0xFEFF) { text = text.substring(1); } // strip BOM
+
+        var records = [];   // { cells: [...], line: n }
+        var field = "";
+        var row = [];
+        var inQuotes = false;
+        var fieldWasQuoted = false;
+        var line = 1;
+        var rowStartLine = 1;
+        var i = 0, n = text.length, c, next;
+
+        function endField() {
+            row.push(field);
+            field = "";
+            fieldWasQuoted = false;
+        }
+
+        function endRow() {
+            endField();
+            var allEmpty = true, j;
+            for (j = 0; j < row.length; j++) {
+                if (CB.Util.trim(row[j]) !== "") { allEmpty = false; break; }
+            }
+            if (!allEmpty) { records.push({ cells: row, line: rowStartLine }); }
+            row = [];
+            rowStartLine = line;
+        }
+
+        while (i < n) {
+            c = text.charAt(i);
+            if (inQuotes) {
+                if (c === '"') {
+                    next = (i + 1 < n) ? text.charAt(i + 1) : "";
+                    if (next === '"') { field += '"'; i += 2; }
+                    else { inQuotes = false; i++; }
+                } else {
+                    if (c === "\n") { line++; }
+                    field += c;
+                    i++;
+                }
+            } else {
+                if (c === '"') {
+                    if (CB.Util.trim(field) === "" && !fieldWasQuoted) {
+                        field = ""; // drop any stray spaces before the opening quote
+                        inQuotes = true;
+                        fieldWasQuoted = true;
+                        i++;
+                    } else if (fieldWasQuoted) {
+                        throw new CB.ValidationError([
+                            "Malformed CSV at line " + line + ": unexpected characters after a closing quote."
+                        ]);
+                    } else {
+                        // Lenient: a quote inside an unquoted field is literal.
+                        field += c;
+                        i++;
+                    }
+                } else if (c === ",") {
+                    endField();
+                    i++;
+                } else if (c === "\r") {
+                    if (i + 1 < n && text.charAt(i + 1) === "\n") { i++; }
+                    line++;
+                    endRow();
+                    i++;
+                } else if (c === "\n") {
+                    line++;
+                    endRow();
+                    i++;
+                } else {
+                    if (fieldWasQuoted && CB.Util.trim(c) !== "") {
+                        throw new CB.ValidationError([
+                            "Malformed CSV at line " + line + ": unexpected characters after a closing quote."
+                        ]);
+                    }
+                    field += c;
+                    i++;
+                }
+            }
+        }
+        if (inQuotes) {
+            throw new CB.ValidationError(["Malformed CSV: a quoted field starting near line " + rowStartLine + " is never closed."]);
+        }
+        if (field !== "" || row.length > 0) { endRow(); }
+
+        if (records.length === 0) {
+            throw new CB.ValidationError(["CSV contains no data (file is empty after removing blank lines)."]);
+        }
+
+        // --- headers ---
+        var headerRec = records[0];
+        var headers = [];
+        var errors = [];
+        var seen = {};
+        var k, h, hkey;
+        for (k = 0; k < headerRec.cells.length; k++) {
+            h = CB.Util.trim(headerRec.cells[k]);
+            if (h === "") {
+                errors.push("Header column " + (k + 1) + " is empty. Every column needs a unique, non-empty header.");
+                h = "(column " + (k + 1) + ")";
+            }
+            hkey = h.toLowerCase();
+            if (seen.hasOwnProperty(hkey)) {
+                errors.push('Duplicate header "' + h + '" (columns ' + (seen[hkey] + 1) + " and " + (k + 1) + "). Headers must be unique.");
+            } else {
+                seen[hkey] = k;
+            }
+            headers.push(h);
+        }
+        if (records.length < 2) {
+            errors.push("CSV has a header row but no data rows.");
+        }
+        if (errors.length) { throw new CB.ValidationError(errors); }
+
+        // --- data rows ---
+        var rows = [];
+        var rowLines = [];
+        var badCounts = [];
+        for (k = 1; k < records.length; k++) {
+            if (records[k].cells.length !== headers.length) {
+                badCounts.push("Line " + records[k].line + ": expected " + headers.length +
+                    " fields but found " + records[k].cells.length + ".");
+            } else {
+                rows.push(records[k].cells);
+                rowLines.push(records[k].line);
+            }
+        }
+        if (badCounts.length) { throw new CB.ValidationError(badCounts); }
+
+        return { headers: headers, rows: rows, rowLines: rowLines };
+    }
+
+    return { parse: parse };
+})();

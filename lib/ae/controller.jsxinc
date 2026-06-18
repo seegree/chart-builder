@@ -1,0 +1,140 @@
+/*
+ * Chart Builder -- chart controller null.
+ * Each generated chart is owned by one null layer that:
+ *   - stores the full chart config in its layer comment (CB.Persist)
+ *   - exposes live Color Controls (background/text/grid/axis/series N)
+ *     that every generated color expression points at
+ *   - parents every generated layer, so the chart moves/scales as one unit
+ * The controller's transform is identity (anchor/position at [0,0]) so
+ * children keep comp-space coordinates when parented.
+ */
+if (typeof CB === "undefined") { var CB = {}; }
+
+CB.Controller = (function () {
+
+    var EFFECTS = {
+        bg: "Background Color",
+        text: "Text Color",
+        grid: "Grid Color",
+        axis: "Axis Color"
+    };
+
+    function seriesEffectName(i) {
+        return "Series " + (i + 1) + " Color";
+    }
+
+    function addColorControl(ctrl, name, rgb) {
+        var fx = ctrl.property("ADBE Effect Parade").addProperty("ADBE Color Control");
+        fx.name = name;
+        fx.property("ADBE Color Control-0001").setValue(rgb);
+        return fx;
+    }
+
+    // colors: { bg, text, grid, axis, series: [[r,g,b], ...] }
+    function create(comp, cfg, colors) {
+        var ctrl = comp.layers.addNull(comp.duration);
+        ctrl.name = CB.AE.uniqueLayerName(comp, "Chart \u25B8 " + (cfg.title || cfg.type) + " [" + cfg.id + "]");
+        ctrl.transform.anchorPoint.setValue([0, 0]);
+        ctrl.transform.position.setValue([0, 0]);
+        ctrl.enabled = false; // visibility switch off
+        ctrl.label = 10;
+        ctrl.comment = CB.Persist.encode(cfg);
+
+        addColorControl(ctrl, EFFECTS.bg, colors.bg);
+        addColorControl(ctrl, EFFECTS.text, colors.text);
+        addColorControl(ctrl, EFFECTS.grid, colors.grid);
+        addColorControl(ctrl, EFFECTS.axis, colors.axis);
+        var i;
+        for (i = 0; i < colors.series.length; i++) {
+            addColorControl(ctrl, seriesEffectName(i), colors.series[i]);
+        }
+        return ctrl;
+    }
+
+    // Expression bundle for chart code: exprs.bg / .text / .grid / .axis /
+    // .series(i) -- all strings referencing this controller by name.
+    function expressions(ctrl) {
+        return {
+            bg: CB.AE.colorExpr(ctrl.name, EFFECTS.bg),
+            text: CB.AE.colorExpr(ctrl.name, EFFECTS.text),
+            grid: CB.AE.colorExpr(ctrl.name, EFFECTS.grid),
+            axis: CB.AE.colorExpr(ctrl.name, EFFECTS.axis),
+            series: function (i) {
+                return CB.AE.colorExpr(ctrl.name, seriesEffectName(i));
+            }
+        };
+    }
+
+    // Resolve a chart controller from any selected layer: the layer itself,
+    // or (for one-hop children) its parent. Returns null when no chart found.
+    function fromLayer(layer) {
+        if (!layer) { return null; }
+        if (CB.Persist.isChartComment(layer.comment)) { return layer; }
+        if (layer.parent && CB.Persist.isChartComment(layer.parent.comment)) { return layer.parent; }
+        return null;
+    }
+
+    function readConfig(ctrl) {
+        return CB.Persist.decode(ctrl.comment);
+    }
+
+    // Current Color Control values, for preserving custom colors across a
+    // refresh. -> { bg, text, grid, axis, series: [...] } (arrays of [r,g,b])
+    function readColors(ctrl) {
+        var fx = ctrl.property("ADBE Effect Parade");
+        function val(name) {
+            var e = fx.property(name);
+            if (!e) { return null; }
+            var v = e.property("ADBE Color Control-0001").value;
+            return [v[0], v[1], v[2]];
+        }
+        var out = {
+            bg: val(EFFECTS.bg),
+            text: val(EFFECTS.text),
+            grid: val(EFFECTS.grid),
+            axis: val(EFFECTS.axis),
+            series: []
+        };
+        var i = 0, v;
+        while (true) {
+            v = val(seriesEffectName(i));
+            if (v === null) { break; }
+            out.series.push(v);
+            i++;
+            if (i > 500) { break; }
+        }
+        return out;
+    }
+
+    // All layers in the comp parented (directly) to ctrl.
+    function childLayers(ctrl) {
+        var comp = ctrl.containingComp;
+        var out = [], i, ly;
+        for (i = 1; i <= comp.numLayers; i++) {
+            ly = comp.layer(i);
+            if (ly.parent && ly.parent.index === ctrl.index && ly.index !== ctrl.index) {
+                out.push(ly);
+            }
+        }
+        return out;
+    }
+
+    function deleteChart(ctrl) {
+        var children = childLayers(ctrl);
+        var i;
+        for (i = 0; i < children.length; i++) { children[i].remove(); }
+        ctrl.remove();
+    }
+
+    return {
+        EFFECTS: EFFECTS,
+        seriesEffectName: seriesEffectName,
+        create: create,
+        expressions: expressions,
+        fromLayer: fromLayer,
+        readConfig: readConfig,
+        readColors: readColors,
+        childLayers: childLayers,
+        deleteChart: deleteChart
+    };
+})();

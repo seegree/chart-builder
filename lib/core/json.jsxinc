@@ -1,0 +1,184 @@
+/*
+ * Chart Builder -- minimal JSON encoder/decoder.
+ * ExtendScript has no native JSON object, so chart configs persisted on the
+ * controller layer use this. Supports objects, arrays, strings, finite
+ * numbers, booleans, and null.
+ */
+if (typeof CB === "undefined") { var CB = {}; }
+
+CB.JSONX = (function () {
+
+    function escapeString(s) {
+        var out = "", i, c, code;
+        for (i = 0; i < s.length; i++) {
+            c = s.charAt(i);
+            code = s.charCodeAt(i);
+            if (c === '"') { out += '\\"'; }
+            else if (c === "\\") { out += "\\\\"; }
+            else if (c === "\n") { out += "\\n"; }
+            else if (c === "\r") { out += "\\r"; }
+            else if (c === "\t") { out += "\\t"; }
+            else if (c === "\b") { out += "\\b"; }
+            else if (c === "\f") { out += "\\f"; }
+            else if (code < 32) {
+                var hex = code.toString(16);
+                while (hex.length < 4) { hex = "0" + hex; }
+                out += "\\u" + hex;
+            }
+            else { out += c; }
+        }
+        return out;
+    }
+
+    function stringify(v) {
+        var i, parts, k;
+        if (v === null || v === undefined) { return "null"; }
+        if (typeof v === "boolean") { return v ? "true" : "false"; }
+        if (typeof v === "number") { return isFinite(v) ? String(v) : "null"; }
+        if (typeof v === "string") { return '"' + escapeString(v) + '"'; }
+        if (CB.Util.isArray(v)) {
+            parts = [];
+            for (i = 0; i < v.length; i++) { parts.push(stringify(v[i])); }
+            return "[" + parts.join(",") + "]";
+        }
+        if (typeof v === "object") {
+            parts = [];
+            for (k in v) {
+                if (v.hasOwnProperty(k) && typeof v[k] !== "function") {
+                    parts.push('"' + escapeString(k) + '":' + stringify(v[k]));
+                }
+            }
+            return "{" + parts.join(",") + "}";
+        }
+        return "null";
+    }
+
+    // --- Recursive-descent parser ---
+
+    function Parser(text) {
+        this.text = text;
+        this.pos = 0;
+    }
+
+    Parser.prototype.fail = function (msg) {
+        throw new Error("JSON parse error at position " + this.pos + ": " + msg);
+    };
+
+    Parser.prototype.skipWs = function () {
+        while (this.pos < this.text.length && " \t\n\r".indexOf(this.text.charAt(this.pos)) !== -1) {
+            this.pos++;
+        }
+    };
+
+    Parser.prototype.peek = function () {
+        return this.pos < this.text.length ? this.text.charAt(this.pos) : "";
+    };
+
+    Parser.prototype.expect = function (c) {
+        if (this.peek() !== c) { this.fail("expected '" + c + "'"); }
+        this.pos++;
+    };
+
+    Parser.prototype.parseValue = function () {
+        this.skipWs();
+        var c = this.peek();
+        if (c === "{") { return this.parseObject(); }
+        if (c === "[") { return this.parseArray(); }
+        if (c === '"') { return this.parseString(); }
+        if (c === "t") { return this.parseLiteral("true", true); }
+        if (c === "f") { return this.parseLiteral("false", false); }
+        if (c === "n") { return this.parseLiteral("null", null); }
+        return this.parseNumber();
+    };
+
+    Parser.prototype.parseLiteral = function (word, value) {
+        if (this.text.substring(this.pos, this.pos + word.length) !== word) {
+            this.fail("invalid literal");
+        }
+        this.pos += word.length;
+        return value;
+    };
+
+    Parser.prototype.parseNumber = function () {
+        var re = /^-?(0|[1-9]\d*)(\.\d+)?([eE][+-]?\d+)?/;
+        var m = re.exec(this.text.substring(this.pos));
+        if (!m) { this.fail("invalid number"); }
+        this.pos += m[0].length;
+        return parseFloat(m[0]);
+    };
+
+    Parser.prototype.parseString = function () {
+        this.expect('"');
+        var out = "", c, code;
+        while (true) {
+            if (this.pos >= this.text.length) { this.fail("unterminated string"); }
+            c = this.text.charAt(this.pos);
+            if (c === '"') { this.pos++; return out; }
+            if (c === "\\") {
+                this.pos++;
+                c = this.text.charAt(this.pos);
+                if (c === '"') { out += '"'; }
+                else if (c === "\\") { out += "\\"; }
+                else if (c === "/") { out += "/"; }
+                else if (c === "n") { out += "\n"; }
+                else if (c === "r") { out += "\r"; }
+                else if (c === "t") { out += "\t"; }
+                else if (c === "b") { out += "\b"; }
+                else if (c === "f") { out += "\f"; }
+                else if (c === "u") {
+                    code = parseInt(this.text.substring(this.pos + 1, this.pos + 5), 16);
+                    if (isNaN(code)) { this.fail("invalid unicode escape"); }
+                    out += String.fromCharCode(code);
+                    this.pos += 4;
+                }
+                else { this.fail("invalid escape '\\" + c + "'"); }
+                this.pos++;
+            } else {
+                out += c;
+                this.pos++;
+            }
+        }
+    };
+
+    Parser.prototype.parseArray = function () {
+        this.expect("[");
+        var out = [];
+        this.skipWs();
+        if (this.peek() === "]") { this.pos++; return out; }
+        while (true) {
+            out.push(this.parseValue());
+            this.skipWs();
+            if (this.peek() === ",") { this.pos++; continue; }
+            this.expect("]");
+            return out;
+        }
+    };
+
+    Parser.prototype.parseObject = function () {
+        this.expect("{");
+        var out = {};
+        this.skipWs();
+        if (this.peek() === "}") { this.pos++; return out; }
+        while (true) {
+            this.skipWs();
+            var key = this.parseString();
+            this.skipWs();
+            this.expect(":");
+            out[key] = this.parseValue();
+            this.skipWs();
+            if (this.peek() === ",") { this.pos++; continue; }
+            this.expect("}");
+            return out;
+        }
+    };
+
+    function parse(text) {
+        var p = new Parser(text);
+        var v = p.parseValue();
+        p.skipWs();
+        if (p.pos !== text.length) { p.fail("trailing characters"); }
+        return v;
+    }
+
+    return { stringify: stringify, parse: parse };
+})();

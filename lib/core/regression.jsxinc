@@ -1,0 +1,75 @@
+/*
+ * Chart Builder -- ordinary least-squares linear regression and
+ * line-segment clipping for trend lines.
+ */
+if (typeof CB === "undefined") { var CB = {}; }
+
+CB.Regression = (function () {
+
+    // points: [{ x, y }, ...]
+    // -> { slope, intercept, r2, n } or null when a line cannot be fit
+    //    (fewer than 2 points, or constant X).
+    function ols(points) {
+        var n = points.length;
+        if (n < 2) { return null; }
+        var sx = 0, sy = 0, i;
+        for (i = 0; i < n; i++) { sx += points[i].x; sy += points[i].y; }
+        var mx = sx / n, my = sy / n;
+        var sxx = 0, sxy = 0, syy = 0, dx, dy;
+        for (i = 0; i < n; i++) {
+            dx = points[i].x - mx;
+            dy = points[i].y - my;
+            sxx += dx * dx;
+            sxy += dx * dy;
+            syy += dy * dy;
+        }
+        if (sxx === 0) { return null; } // vertical line: undefined slope
+        var slope = sxy / sxx;
+        var intercept = my - slope * mx;
+        var r2;
+        if (syy === 0) {
+            // Constant Y: the horizontal fit is exact.
+            r2 = 1;
+        } else {
+            var ssRes = 0, res;
+            for (i = 0; i < n; i++) {
+                res = points[i].y - (slope * points[i].x + intercept);
+                ssRes += res * res;
+            }
+            r2 = 1 - ssRes / syy;
+            if (r2 < 0) { r2 = 0; }
+        }
+        return { slope: slope, intercept: intercept, r2: r2, n: n };
+    }
+
+    // Liang-Barsky clip of segment (x1,y1)-(x2,y2) to rect {l, t, r, b}
+    // (t < b, screen-style coordinates). Returns { x1, y1, x2, y2 } or null
+    // when the segment lies entirely outside the rect.
+    function clipSegment(x1, y1, x2, y2, rect) {
+        var dx = x2 - x1, dy = y2 - y1;
+        var t0 = 0, t1 = 1;
+        var p = [-dx, dx, -dy, dy];
+        var q = [x1 - rect.l, rect.r - x1, y1 - rect.t, rect.b - y1];
+        var i, r;
+        for (i = 0; i < 4; i++) {
+            if (p[i] === 0) {
+                if (q[i] < 0) { return null; }
+            } else {
+                r = q[i] / p[i];
+                if (p[i] < 0) {
+                    if (r > t1) { return null; }
+                    if (r > t0) { t0 = r; }
+                } else {
+                    if (r < t0) { return null; }
+                    if (r < t1) { t1 = r; }
+                }
+            }
+        }
+        return {
+            x1: x1 + t0 * dx, y1: y1 + t0 * dy,
+            x2: x1 + t1 * dx, y2: y1 + t1 * dy
+        };
+    }
+
+    return { ols: ols, clipSegment: clipSegment };
+})();

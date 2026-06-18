@@ -1,0 +1,293 @@
+/*
+ * Chart Builder -- After Effects helpers: shape layers, text layers,
+ * sourceRectAtTime-based placement, expressions, and eased keyframes.
+ * AE-only (uses the ExtendScript DOM); not loaded by the Node tests.
+ */
+if (typeof CB === "undefined") { var CB = {}; }
+
+CB.AE = (function () {
+
+    var FONT = "ArialMT";
+
+    function escapeExprString(s) {
+        return String(s).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+    }
+
+    // Layer/group names must stay single-line and reasonably short, even
+    // when data values (which may contain newlines) feed into them.
+    function safeName(s, max) {
+        max = max || 60;
+        s = String(s).replace(/[\r\n\t]+/g, " ");
+        if (s.length > max) { s = s.substring(0, max - 1) + "\u2026"; }
+        return s;
+    }
+
+    // Expression tying a color property to a Color Control on the controller.
+    function colorExpr(controllerName, effectName) {
+        return 'thisComp.layer("' + escapeExprString(controllerName) + '")' +
+               '.effect("' + escapeExprString(effectName) + '")("Color")';
+    }
+
+    // --- Shape layers -------------------------------------------------------
+
+    // New shape layer whose internal coordinates equal comp coordinates
+    // (anchor and position zeroed), so geometry can be authored in comp space.
+    function addShapeLayer(comp, name) {
+        var layer = comp.layers.addShape();
+        layer.name = name;
+        layer.transform.anchorPoint.setValue([0, 0]);
+        layer.transform.position.setValue([0, 0]);
+        return layer;
+    }
+
+    function layerContents(layer) {
+        return layer.property("ADBE Root Vectors Group");
+    }
+
+    function addGroup(parentContents, name) {
+        var g = parentContents.addProperty("ADBE Vector Group");
+        if (name) { g.name = safeName(name); }
+        return g;
+    }
+
+    function groupContents(group) {
+        return group.property("ADBE Vectors Group");
+    }
+
+    function groupTransform(group) {
+        return group.property("ADBE Vector Transform Group");
+    }
+
+    function addRect(group, size, center, roundness) {
+        var rc = groupContents(group).addProperty("ADBE Vector Shape - Rect");
+        rc.property("ADBE Vector Rect Size").setValue(size);
+        rc.property("ADBE Vector Rect Position").setValue(center);
+        if (roundness) { rc.property("ADBE Vector Rect Roundness").setValue(roundness); }
+        return rc;
+    }
+
+    function addEllipse(group, size, center) {
+        var el = groupContents(group).addProperty("ADBE Vector Shape - Ellipse");
+        el.property("ADBE Vector Ellipse Size").setValue(size);
+        el.property("ADBE Vector Ellipse Position").setValue(center);
+        return el;
+    }
+
+    // points: [[x, y], ...] in comp space (group transform assumed identity).
+    function addPath(group, points, closed) {
+        var sh = new Shape();
+        sh.vertices = points;
+        var zeros = [], i;
+        for (i = 0; i < points.length; i++) { zeros.push([0, 0]); }
+        sh.inTangents = zeros;
+        sh.outTangents = zeros;
+        sh.closed = closed ? true : false;
+        var pathProp = groupContents(group).addProperty("ADBE Vector Shape - Group");
+        pathProp.property("ADBE Vector Shape").setValue(sh);
+        return pathProp;
+    }
+
+    // colorOrExpr: [r,g,b] literal, expression string, or both via
+    // { value: [r,g,b], expr: "..." } (value gives the static fallback).
+    function applyColor(prop, colorOrExpr) {
+        if (typeof colorOrExpr === "string") {
+            prop.expression = colorOrExpr;
+        } else if (colorOrExpr && colorOrExpr.expr !== undefined) {
+            if (colorOrExpr.value) { prop.setValue(colorOrExpr.value); }
+            prop.expression = colorOrExpr.expr;
+        } else if (colorOrExpr) {
+            prop.setValue(colorOrExpr);
+        }
+    }
+
+    function addFill(group, colorOrExpr, opacityPct) {
+        var fill = groupContents(group).addProperty("ADBE Vector Graphic - Fill");
+        applyColor(fill.property("ADBE Vector Fill Color"), colorOrExpr);
+        if (opacityPct !== undefined) {
+            fill.property("ADBE Vector Fill Opacity").setValue(opacityPct);
+        }
+        return fill;
+    }
+
+    function addStroke(group, colorOrExpr, widthPx, opts) {
+        var st = groupContents(group).addProperty("ADBE Vector Graphic - Stroke");
+        applyColor(st.property("ADBE Vector Stroke Color"), colorOrExpr);
+        st.property("ADBE Vector Stroke Width").setValue(widthPx);
+        st.property("ADBE Vector Stroke Line Cap").setValue(2); // round cap
+        if (opts && opts.dashes) {
+            var dashGroup = st.property("ADBE Vector Stroke Dashes");
+            dashGroup.addProperty("ADBE Vector Stroke Dash 1").setValue(opts.dashes[0]);
+            if (opts.dashes.length > 1) {
+                dashGroup.addProperty("ADBE Vector Stroke Gap 1").setValue(opts.dashes[1]);
+            }
+        }
+        return st;
+    }
+
+    function addTrimPaths(layer) {
+        return layerContents(layer).addProperty("ADBE Vector Filter - Trim");
+    }
+
+    // --- Text layers ----------------------------------------------------------
+
+    // opts: { size, justification, box: [w, h] | null, tracking }
+    function addText(comp, str, opts) {
+        opts = opts || {};
+        var layer = (opts.box)
+            ? comp.layers.addBoxText(opts.box, str)
+            : comp.layers.addText(str);
+        var prop = layer.property("ADBE Text Properties").property("ADBE Text Document");
+        var td = prop.value;
+        try { td.font = FONT; } catch (eFont) { /* keep whatever default font exists */ }
+        if (opts.size) { td.fontSize = opts.size; }
+        td.applyFill = true;
+        td.applyStroke = false;
+        if (opts.justification) { td.justification = opts.justification; }
+        if (opts.tracking !== undefined) { td.tracking = opts.tracking; }
+        prop.setValue(td);
+        return layer;
+    }
+
+    function setTextSize(layer, size) {
+        var prop = layer.property("ADBE Text Properties").property("ADBE Text Document");
+        var td = prop.value;
+        td.fontSize = size;
+        prop.setValue(td);
+    }
+
+    function getTextSize(layer) {
+        return layer.property("ADBE Text Properties").property("ADBE Text Document").value.fontSize;
+    }
+
+    // Bind a text layer's fill color to a controller Color Control through a
+    // text animator, so edits to the control restyle the text live.
+    function bindTextColor(layer, expr) {
+        var animators = layer.property("ADBE Text Properties").property("ADBE Text Animators");
+        var animator = animators.addProperty("ADBE Text Animator");
+        animator.name = "CB Color";
+        var fillColor = animator.property("ADBE Text Animator Properties").addProperty("ADBE Text Fill Color");
+        fillColor.expression = expr;
+    }
+
+    function measure(layer, time) {
+        return layer.sourceRectAtTime(time, false);
+    }
+
+    // Position a text (or shape) layer so its measured bounds land on a
+    // target point. mode: "center" | "centerX-top" | "right-centerY" |
+    // "left-centerY" | "center-top".
+    function placeLayer(layer, mode, tx, ty, time) {
+        var r = measure(layer, time);
+        var x, y;
+        if (mode === "right-centerY") {
+            x = tx - (r.left + r.width);
+            y = ty - (r.top + r.height / 2);
+        } else if (mode === "left-centerY") {
+            x = tx - r.left;
+            y = ty - (r.top + r.height / 2);
+        } else if (mode === "center-top") {
+            x = tx - (r.left + r.width / 2);
+            y = ty - r.top;
+        } else { // "center"
+            x = tx - (r.left + r.width / 2);
+            y = ty - (r.top + r.height / 2);
+        }
+        layer.transform.position.setValue([x, y]);
+        return r;
+    }
+
+    // --- Keyframes & easing -----------------------------------------------------
+
+    function easeDims(prop) {
+        // Spatial properties take a single ease; other multi-dimensional
+        // properties need one ease per dimension.
+        var vt = prop.propertyValueType;
+        if (vt === PropertyValueType.TwoD_SPATIAL || vt === PropertyValueType.ThreeD_SPATIAL) { return 1; }
+        if (vt === PropertyValueType.TwoD) { return 2; }
+        if (vt === PropertyValueType.ThreeD) { return 3; }
+        if (vt === PropertyValueType.COLOR) { return 1; }
+        return 1;
+    }
+
+    function easeArray(prop, speed, influence) {
+        var n = easeDims(prop);
+        var out = [], i;
+        for (i = 0; i < n; i++) { out.push(new KeyframeEase(speed, influence)); }
+        return out;
+    }
+
+    // Two keyframes with an ease-out arrival (decelerate into the end value).
+    function setEasedKeys(prop, t1, v1, t2, v2) {
+        var k1 = prop.addKey(t1);
+        prop.setValueAtKey(k1, v1);
+        var k2 = prop.addKey(t2);
+        prop.setValueAtKey(k2, v2);
+        var fast = easeArray(prop, 0, 66);
+        var slow = easeArray(prop, 0, 90);
+        try {
+            prop.setTemporalEaseAtKey(k1, fast, fast);
+            prop.setTemporalEaseAtKey(k2, slow, slow);
+        } catch (eEase) { /* leave linear if this property refuses eases */ }
+        return [k1, k2];
+    }
+
+    // --- Misc ---------------------------------------------------------------------
+
+    function findLayerByName(comp, name) {
+        var i;
+        for (i = 1; i <= comp.numLayers; i++) {
+            if (comp.layer(i).name === name) { return comp.layer(i); }
+        }
+        return null;
+    }
+
+    function uniqueLayerName(comp, base) {
+        base = safeName(base);
+        var name = base, n = 2;
+        while (findLayerByName(comp, name) !== null) {
+            name = base + " " + n;
+            n++;
+            if (n > 500) { break; }
+        }
+        return name;
+    }
+
+    function readTextFile(path) {
+        var f = new File(path);
+        if (!f.exists) { return null; }
+        f.encoding = "UTF-8";
+        if (!f.open("r")) { return null; }
+        var txt = f.read();
+        f.close();
+        return txt;
+    }
+
+    return {
+        FONT: FONT,
+        escapeExprString: escapeExprString,
+        safeName: safeName,
+        colorExpr: colorExpr,
+        addShapeLayer: addShapeLayer,
+        layerContents: layerContents,
+        addGroup: addGroup,
+        groupContents: groupContents,
+        groupTransform: groupTransform,
+        addRect: addRect,
+        addEllipse: addEllipse,
+        addPath: addPath,
+        addFill: addFill,
+        addStroke: addStroke,
+        addTrimPaths: addTrimPaths,
+        addText: addText,
+        setTextSize: setTextSize,
+        getTextSize: getTextSize,
+        bindTextColor: bindTextColor,
+        measure: measure,
+        placeLayer: placeLayer,
+        setEasedKeys: setEasedKeys,
+        easeArray: easeArray,
+        findLayerByName: findLayerByName,
+        uniqueLayerName: uniqueLayerName,
+        readTextFile: readTextFile
+    };
+})();

@@ -1,0 +1,59 @@
+/*
+ * Chart Builder -- bar renderer (vertical bars, single or grouped by series).
+ * One shape layer per series; one shape group per bar. Each bar group is
+ * anchored on the zero baseline and animates by scaling Y from 0 to 100,
+ * so positive bars grow up and negative bars grow down -- always from zero.
+ */
+if (typeof CB === "undefined") { var CB = {}; }
+
+CB.RendererBar = (function () {
+
+    // ctx: see CB.Chrome.build. layout: returned by CB.Chrome.build.
+    function build(ctx, layout) {
+        var model = ctx.model;
+        var nSeries = model.seriesNames.length;
+        var t0 = ctx.cfg.animStart;
+        var dur = Math.max(0.1, ctx.cfg.anim.duration);
+        var stagger = Math.max(0, ctx.cfg.anim.stagger);
+
+        var groupW = layout.slotW * 0.72;
+        var innerGap = (nSeries > 1) ? groupW * 0.08 / nSeries : 0;
+        var barW = (groupW - innerGap * (nSeries - 1)) / nSeries;
+
+        // One shape layer per series so colors and timing stay organized.
+        var seriesLayers = [], si;
+        for (si = 0; si < nSeries; si++) {
+            var ly = CB.AE.addShapeLayer(ctx.comp,
+                CB.AE.uniqueLayerName(ctx.comp, "Bars \u25B8 " + model.seriesNames[si]));
+            ly.parent = ctx.ctrl;
+            ctx.track(ly);
+            seriesLayers.push(ly);
+        }
+
+        var i, bar, cx, bx, topY, h, g, gt;
+        for (i = 0; i < model.bars.length; i++) {
+            bar = model.bars[i];
+            cx = layout.catX(bar.ci);
+            bx = cx - groupW / 2 + bar.si * (barW + innerGap) + barW / 2;
+            topY = layout.yScale(bar.value);
+            h = Math.abs(topY - layout.y0);
+
+            g = CB.AE.addGroup(CB.AE.layerContents(seriesLayers[bar.si]),
+                "Bar \u25B8 " + bar.category);
+            // Geometry is authored relative to the group's anchor, which sits
+            // on the zero baseline -- Y-scaling then grows the bar out of zero.
+            CB.AE.addRect(g, [barW, h],
+                [0, (bar.value >= 0 ? -h / 2 : h / 2)], 0);
+            CB.AE.addFill(g, ctx.exprs.series(bar.si));
+
+            gt = CB.AE.groupTransform(g);
+            gt.property("ADBE Vector Position").setValue([bx, layout.y0]);
+
+            var tStart = t0 + (bar.ci * nSeries + bar.si) * stagger;
+            CB.AE.setEasedKeys(gt.property("ADBE Vector Scale"),
+                tStart, [100, 0], tStart + dur, [100, 100]);
+        }
+    }
+
+    return { build: build };
+})();

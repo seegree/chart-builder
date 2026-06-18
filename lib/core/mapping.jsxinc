@@ -1,0 +1,96 @@
+/*
+ * Chart Builder -- column-mapping field specs per renderer, plus
+ * auto-mapping of common header names.
+ */
+if (typeof CB === "undefined") { var CB = {}; }
+
+CB.Mapping = (function () {
+
+    var FIELDS = {
+        bar: [
+            { key: "category", label: "Category", required: true,
+              help: "Text column naming each bar (or bar group)." },
+            { key: "value", label: "Value", required: true,
+              help: "Numeric column for bar heights. Negative values hang below the zero baseline." },
+            { key: "series", label: "Series", required: false,
+              help: "Optional grouping column. Bars sharing a Category are grouped side by side and colored per Series." }
+        ],
+        line: [
+            { key: "x", label: "X", required: true,
+              help: "Numeric column, or ISO dates (YYYY-MM-DD)." },
+            { key: "y", label: "Y", required: true,
+              help: "Numeric column plotted on the vertical axis." },
+            { key: "series", label: "Series", required: false,
+              help: "Optional, but required when multiple rows share an X value. One line is drawn per series." }
+        ],
+        scatter: [
+            { key: "x", label: "X", required: true,
+              help: "Numeric column, or ISO dates (YYYY-MM-DD)." },
+            { key: "y", label: "Y", required: true,
+              help: "Numeric column plotted on the vertical axis." },
+            { key: "series", label: "Series", required: false,
+              help: "Optional grouping/color column." },
+            { key: "label", label: "Point label", required: false,
+              help: "Optional text column rendered next to each point. Empty cells get no label." }
+        ]
+    };
+
+    var GUIDANCE = {
+        bar: "Bar: each row is one bar. Map a text Category and a numeric Value. " +
+             "Add Series to group bars by category and color them per series.",
+        line: "Line: rows are sorted by X within each series and connected. " +
+              "X must be all numeric or all ISO dates (YYYY-MM-DD). " +
+              "If two rows share an X value you must map a Series column.",
+        scatter: "Scatter: each row is one point. X and Y are required; Series colors points, " +
+                 "Point label annotates them. Trend fits an ordinary least-squares line."
+    };
+
+    var SYNONYMS = {
+        category: ["category", "categories", "quarter", "month", "name", "group", "region", "cat", "label", "x"],
+        value: ["value", "values", "amount", "total", "count", "val", "sales", "revenue", "y"],
+        x: ["x", "date", "dates", "day", "time", "week", "month", "quarter", "year"],
+        y: ["y", "value", "values", "amount", "val", "sales", "revenue", "measurement", "total", "count"],
+        series: ["series", "group", "legend", "segment", "type", "team", "product", "region", "country"],
+        label: ["label", "labels", "point", "name", "id", "city", "company", "country"]
+    };
+
+    // headers: array of header strings. type: 'bar'|'line'|'scatter'.
+    // -> { fieldKey: headerName | null } -- a header is used at most once.
+    function auto(type, headers) {
+        var fields = FIELDS[type];
+        var used = {};
+        var out = {};
+        var lower = CB.Util.map(headers, function (h) { return CB.Util.trim(h).toLowerCase(); });
+        var i, j, f, syns, idx;
+
+        for (i = 0; i < fields.length; i++) {
+            f = fields[i];
+            out[f.key] = null;
+            syns = SYNONYMS[f.key] || [];
+            for (j = 0; j < syns.length; j++) {
+                idx = CB.Util.indexOf(lower, syns[j]);
+                if (idx !== -1 && !used[idx]) {
+                    out[f.key] = headers[idx];
+                    used[idx] = true;
+                    break;
+                }
+            }
+        }
+        // Required fields with no synonym hit default to the first unused header.
+        for (i = 0; i < fields.length; i++) {
+            f = fields[i];
+            if (f.required && out[f.key] === null) {
+                for (j = 0; j < headers.length; j++) {
+                    if (!used[j]) {
+                        out[f.key] = headers[j];
+                        used[j] = true;
+                        break;
+                    }
+                }
+            }
+        }
+        return out;
+    }
+
+    return { FIELDS: FIELDS, GUIDANCE: GUIDANCE, auto: auto };
+})();

@@ -1,0 +1,89 @@
+/*
+ * Chart Builder -- shared utilities.
+ * ES3-safe: runs in After Effects ExtendScript and in Node (for tests).
+ */
+if (typeof CB === "undefined") { var CB = {}; }
+
+CB.ValidationError = function (messages) {
+    this.name = "ChartBuilderValidationError";
+    this.messages = (messages && messages.length !== undefined && typeof messages !== "string") ? messages : [String(messages)];
+    this.message = this.messages.join("\n");
+};
+CB.ValidationError.prototype.toString = function () { return this.message; };
+
+CB.Util = {
+
+    trim: function (s) {
+        return String(s).replace(/^[\s\uFEFF\u00A0]+/, "").replace(/[\s\uFEFF\u00A0]+$/, "");
+    },
+
+    isArray: function (v) {
+        return Object.prototype.toString.call(v) === "[object Array]";
+    },
+
+    map: function (arr, fn) {
+        var out = [], i;
+        for (i = 0; i < arr.length; i++) { out.push(fn(arr[i], i)); }
+        return out;
+    },
+
+    filter: function (arr, fn) {
+        var out = [], i;
+        for (i = 0; i < arr.length; i++) { if (fn(arr[i], i)) { out.push(arr[i]); } }
+        return out;
+    },
+
+    indexOf: function (arr, v) {
+        var i;
+        for (i = 0; i < arr.length; i++) { if (arr[i] === v) { return i; } }
+        return -1;
+    },
+
+    keys: function (obj) {
+        var out = [], k;
+        for (k in obj) { if (obj.hasOwnProperty(k)) { out.push(k); } }
+        return out;
+    },
+
+    clamp: function (v, lo, hi) {
+        return v < lo ? lo : (v > hi ? hi : v);
+    },
+
+    log10: function (x) {
+        return Math.log(x) / Math.LN10;
+    },
+
+    // "12345.6", decimals 1 -> "12,345.6". Used for axis tick labels.
+    formatNumber: function (v, decimals) {
+        var neg = v < 0;
+        var s = Math.abs(v).toFixed(decimals);
+        var parts = s.split(".");
+        var intPart = parts[0];
+        var out = "";
+        var i, count = 0;
+        for (i = intPart.length - 1; i >= 0; i--) {
+            out = intPart.charAt(i) + out;
+            count++;
+            if (count % 3 === 0 && i > 0) { out = "," + out; }
+        }
+        if (parts.length > 1) { out += "." + parts[1]; }
+        return (neg ? "-" : "") + out;
+    },
+
+    // Strict numeric parse. Accepts: 12, -3.5, +7, .5, 1e6, and
+    // comma-grouped thousands ("1,234,567.89"). Returns null when invalid.
+    parseNumber: function (raw) {
+        var s = CB.Util.trim(raw);
+        if (s === "") { return null; }
+        if (/^[+-]?\d{1,3}(,\d{3})+(\.\d+)?$/.test(s)) { s = s.replace(/,/g, ""); }
+        if (!/^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(s)) { return null; }
+        var v = parseFloat(s);
+        return isFinite(v) ? v : null;
+    },
+
+    uniqueId: function () {
+        var t = (new Date()).getTime().toString(36);
+        var r = Math.floor(Math.random() * 1679616).toString(36); // < 36^4
+        return t + r;
+    }
+};

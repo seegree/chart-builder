@@ -1,0 +1,72 @@
+/*
+ * Chart Builder -- line renderer (single or multi-series).
+ * One native shape path per series (separate series are never connected),
+ * revealed with Trim Paths. Point markers pop in as the trim front reaches
+ * them -- reveal times follow each point's share of the path's total length,
+ * which is exactly how Trim Paths progresses along straight segments.
+ */
+if (typeof CB === "undefined") { var CB = {}; }
+
+CB.RendererLine = (function () {
+
+    function build(ctx, layout) {
+        var model = ctx.model;
+        var t0 = ctx.cfg.animStart;
+        var dur = Math.max(0.1, ctx.cfg.anim.duration);
+        var stagger = Math.max(0, ctx.cfg.anim.stagger);
+        var strokeW = Math.max(2, Math.round(6 * layout.sizes.f));
+        var markerD = Math.max(6, Math.round(16 * layout.sizes.f));
+
+        var si, series, pts, i, p;
+        for (si = 0; si < model.series.length; si++) {
+            series = model.series[si];
+            pts = [];
+            for (i = 0; i < series.points.length; i++) {
+                p = series.points[i];
+                pts.push([layout.xScale(p.x), layout.yScale(p.y)]);
+            }
+
+            var tStart = t0 + si * stagger;
+
+            // --- the line itself, drawn on with Trim Paths ---
+            var lineLayer = CB.AE.addShapeLayer(ctx.comp,
+                CB.AE.uniqueLayerName(ctx.comp, "Line \u25B8 " + series.name));
+            var lg = CB.AE.addGroup(CB.AE.layerContents(lineLayer), "Path");
+            CB.AE.addPath(lg, pts, false);
+            CB.AE.addStroke(lg, ctx.exprs.series(si), strokeW);
+            var trim = CB.AE.addTrimPaths(lineLayer);
+            CB.AE.setEasedKeys(trim.property("ADBE Vector Trim End"),
+                tStart, 0, tStart + dur, 100);
+            lineLayer.parent = ctx.ctrl;
+            ctx.track(lineLayer);
+
+            // --- cumulative path length -> per-marker reveal times ---
+            var cum = [0], total = 0, dx, dy;
+            for (i = 1; i < pts.length; i++) {
+                dx = pts[i][0] - pts[i - 1][0];
+                dy = pts[i][1] - pts[i - 1][1];
+                total += Math.sqrt(dx * dx + dy * dy);
+                cum.push(total);
+            }
+
+            var markerLayer = CB.AE.addShapeLayer(ctx.comp,
+                CB.AE.uniqueLayerName(ctx.comp, "Points \u25B8 " + series.name));
+            var mctn = CB.AE.layerContents(markerLayer);
+            var popDur = Math.min(0.35, dur * 0.3);
+            for (i = 0; i < pts.length; i++) {
+                var mg = CB.AE.addGroup(mctn, "Point " + (i + 1));
+                CB.AE.addEllipse(mg, [markerD, markerD], [0, 0]);
+                CB.AE.addFill(mg, ctx.exprs.series(si));
+                var mt = CB.AE.groupTransform(mg);
+                mt.property("ADBE Vector Position").setValue(pts[i]);
+                var reveal = tStart + (total > 0 ? (cum[i] / total) : 0) * dur;
+                CB.AE.setEasedKeys(mt.property("ADBE Vector Scale"),
+                    reveal, [0, 0], reveal + popDur, [100, 100]);
+            }
+            markerLayer.parent = ctx.ctrl;
+            ctx.track(markerLayer);
+        }
+    }
+
+    return { build: build };
+})();

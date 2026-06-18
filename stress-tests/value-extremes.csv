@@ -1,0 +1,10 @@
+Category,Value
+Zero,0
+Tiny decimal,0.0042
+Negative decimal,-12.75
+Thousands,"1,234"
+Plain thousands,9876
+Negative thousands,-45210
+Millions,2000000
+Quoted millions,"7,500,000"
+Negative millions,-1250000

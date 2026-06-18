@@ -1,0 +1,170 @@
+/*
+ * Chart Builder -- linear scales, "nice" numeric ticks, readable date ticks.
+ */
+if (typeof CB === "undefined") { var CB = {}; }
+
+CB.Scales = (function () {
+
+    // Maps [d0, d1] -> [r0, r1]. Degenerate domains are widened so the
+    // scale never divides by zero.
+    function linear(d0, d1, r0, r1) {
+        if (d0 === d1) {
+            if (d0 === 0) { d0 = -1; d1 = 1; }
+            else { var pad = Math.abs(d0) * 0.5; d0 -= pad; d1 += pad; }
+        }
+        var k = (r1 - r0) / (d1 - d0);
+        var fn = function (v) { return r0 + (v - d0) * k; };
+        fn.domain = [d0, d1];
+        fn.range = [r0, r1];
+        return fn;
+    }
+
+    function niceNum(x, doRound) {
+        var exp = Math.floor(CB.Util.log10(x));
+        var f = x / Math.pow(10, exp);
+        var nf;
+        if (doRound) {
+            nf = (f < 1.5) ? 1 : (f < 3) ? 2 : (f < 7) ? 5 : 10;
+        } else {
+            nf = (f <= 1) ? 1 : (f <= 2) ? 2 : (f <= 5) ? 5 : 10;
+        }
+        return nf * Math.pow(10, exp);
+    }
+
+    // Nice ticks that EXTEND the domain outward to round bounds.
+    // -> { ticks: [v...], step, min, max, decimals }
+    function niceTicks(min, max, targetCount) {
+        targetCount = targetCount || 5;
+        if (min === max) {
+            if (min === 0) { min = -1; max = 1; }
+            else {
+                var pad = Math.abs(min) * 0.1;
+                min -= pad; max += pad;
+            }
+        }
+        if (min > max) { var t = min; min = max; max = t; }
+        var step = niceNum((max - min) / Math.max(1, targetCount - 1), true);
+        var kMin = Math.floor(min / step + 1e-9);
+        var kMax = Math.ceil(max / step - 1e-9);
+        var ticks = [], k;
+        for (k = kMin; k <= kMax; k++) { ticks.push(k * step); }
+        var decimals = Math.max(0, -Math.floor(CB.Util.log10(step) + 1e-9));
+        return { ticks: ticks, step: step, min: kMin * step, max: kMax * step, decimals: decimals };
+    }
+
+    // Nice ticks INSIDE [min, max] (domain unchanged). Used for X axes,
+    // where the data extent should not be padded.
+    function ticksWithin(min, max, targetCount) {
+        targetCount = targetCount || 5;
+        if (min === max) {
+            return { ticks: [min], step: 1, decimals: 0 };
+        }
+        var step = niceNum((max - min) / Math.max(1, targetCount - 1), true);
+        var kMin = Math.ceil(min / step - 1e-9);
+        var kMax = Math.floor(max / step + 1e-9);
+        var ticks = [], k;
+        for (k = kMin; k <= kMax; k++) { ticks.push(k * step); }
+        if (ticks.length === 0) { ticks = [min, max]; }
+        var decimals = Math.max(0, -Math.floor(CB.Util.log10(step) + 1e-9));
+        return { ticks: ticks, step: step, decimals: decimals };
+    }
+
+    function formatTick(v, decimals) {
+        // Snap floating-point noise like 0.30000000000000004 before display.
+        var snapped = parseFloat(v.toFixed(Math.min(10, decimals + 2)));
+        return CB.Util.formatNumber(snapped, decimals);
+    }
+
+    // --- Date ticks -------------------------------------------------------
+    // minDay/maxDay are CB.Dates day numbers. Picks a readable unit
+    // (days, weeks, months, quarters, years) for ~targetCount ticks.
+    // -> { ticks: [{ v, label }], unit }
+
+    var DATE_STEPS = [
+        { unit: "day",   n: 1,   approxDays: 1 },
+        { unit: "day",   n: 2,   approxDays: 2 },
+        { unit: "week",  n: 1,   approxDays: 7 },
+        { unit: "week",  n: 2,   approxDays: 14 },
+        { unit: "month", n: 1,   approxDays: 30.44 },
+        { unit: "month", n: 2,   approxDays: 60.87 },
+        { unit: "month", n: 3,   approxDays: 91.31 },
+        { unit: "month", n: 6,   approxDays: 182.6 },
+        { unit: "year",  n: 1,   approxDays: 365.25 },
+        { unit: "year",  n: 2,   approxDays: 730.5 },
+        { unit: "year",  n: 5,   approxDays: 1826 },
+        { unit: "year",  n: 10,  approxDays: 3652 },
+        { unit: "year",  n: 25,  approxDays: 9131 },
+        { unit: "year",  n: 50,  approxDays: 18262 },
+        { unit: "year",  n: 100, approxDays: 36525 }
+    ];
+
+    function dateTicks(minDay, maxDay, targetCount) {
+        targetCount = targetCount || 6;
+        if (minDay > maxDay) { var t = minDay; minDay = maxDay; maxDay = t; }
+        var span = Math.max(1, maxDay - minDay);
+        var chosen = DATE_STEPS[DATE_STEPS.length - 1];
+        var i;
+        for (i = 0; i < DATE_STEPS.length; i++) {
+            if (span / DATE_STEPS[i].approxDays <= targetCount) {
+                chosen = DATE_STEPS[i];
+                break;
+            }
+        }
+
+        var values = [];
+        var k, c, mIndex, y;
+        if (chosen.unit === "day" || chosen.unit === "week") {
+            var stepDays = chosen.n * (chosen.unit === "week" ? 7 : 1);
+            for (k = Math.ceil(minDay / stepDays); k * stepDays <= maxDay; k++) {
+                values.push(k * stepDays);
+            }
+        } else if (chosen.unit === "month") {
+            c = CB.Dates.civilFromDays(minDay);
+            mIndex = c.y * 12 + (c.m - 1);
+            while (mIndex % chosen.n !== 0 || CB.Dates.daysFromCivil(Math.floor(mIndex / 12), (mIndex % 12) + 1, 1) < minDay) {
+                mIndex++;
+            }
+            while (true) {
+                var v = CB.Dates.daysFromCivil(Math.floor(mIndex / 12), (mIndex % 12) + 1, 1);
+                if (v > maxDay) { break; }
+                values.push(v);
+                mIndex += chosen.n;
+            }
+        } else { // year
+            c = CB.Dates.civilFromDays(minDay);
+            y = c.y;
+            while (y % chosen.n !== 0 || CB.Dates.daysFromCivil(y, 1, 1) < minDay) { y++; }
+            while (CB.Dates.daysFromCivil(y, 1, 1) <= maxDay) {
+                values.push(CB.Dates.daysFromCivil(y, 1, 1));
+                y += chosen.n;
+            }
+        }
+        if (values.length === 0) { values = [minDay, maxDay]; }
+
+        var ticks = [];
+        var prevYear = null;
+        for (i = 0; i < values.length; i++) {
+            c = CB.Dates.civilFromDays(values[i]);
+            var label;
+            if (chosen.unit === "year") {
+                label = String(c.y);
+            } else if (chosen.unit === "month") {
+                label = CB.Dates.MONTH_SHORT[c.m - 1] + " " + c.y;
+            } else {
+                label = CB.Dates.MONTH_SHORT[c.m - 1] + " " + c.d;
+                if (prevYear === null || c.y !== prevYear) { label += ", " + c.y; }
+            }
+            prevYear = c.y;
+            ticks.push({ v: values[i], label: label });
+        }
+        return { ticks: ticks, unit: chosen.unit };
+    }
+
+    return {
+        linear: linear,
+        niceTicks: niceTicks,
+        ticksWithin: ticksWithin,
+        formatTick: formatTick,
+        dateTicks: dateTicks
+    };
+})();

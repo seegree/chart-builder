@@ -1,0 +1,302 @@
+/*
+ * Chart Builder -- chart "chrome": background, title, axes, gridlines, tick
+ * labels, category labels, and legend.
+ *
+ * All text placement is measured with sourceRectAtTime (never guessed pixel
+ * offsets): Y labels are vertically centered on their gridlines, X labels
+ * centered on their ticks, category labels centered beneath their full bar
+ * group, the title centered in its header band, and legend markers centered
+ * against their label text.
+ *
+ * build(ctx) lays out the plot area in two passes (create+measure labels,
+ * then position everything) and returns the layout:
+ *   { plotL, plotR, plotT, plotB, yScale, y0, catX(i)?, slotW?, xScale? }
+ *
+ * ctx: { comp, ctrl, exprs, model, cfg, track(layer), warnings[],
+ *        ox, oy, W, H }
+ */
+if (typeof CB === "undefined") { var CB = {}; }
+
+CB.Chrome = (function () {
+
+    var MIN_CAT_FONT = 9;
+
+    function fontSizes(H) {
+        var f = CB.Util.clamp(H / 800, 0.4, 2.5);
+        return {
+            title: Math.round(44 * f),
+            label: Math.round(22 * f),
+            legend: Math.round(22 * f),
+            f: f
+        };
+    }
+
+    function newTextLayer(ctx, str, opts, name) {
+        var layer = CB.AE.addText(ctx.comp, str, opts);
+        layer.name = CB.AE.uniqueLayerName(ctx.comp, name);
+        CB.AE.bindTextColor(layer, ctx.exprs.text);
+        layer.parent = ctx.ctrl;
+        ctx.track(layer);
+        return layer;
+    }
+
+    function build(ctx) {
+        var model = ctx.model;
+        var comp = ctx.comp;
+        var t = comp.time;
+        var sizes = fontSizes(ctx.H);
+        var lineH = Math.round(sizes.label * 1.25);
+        var tickLen = Math.round(8 * sizes.f);
+
+        // --- numeric Y ticks (bar domain always includes zero) ---
+        var yLo = model.yMin, yHi = model.yMax;
+        if (model.type === "bar") {
+            yLo = Math.min(0, yLo);
+            yHi = Math.max(0, yHi);
+        }
+        var yT = CB.Scales.niceTicks(yLo, yHi, 6);
+
+        // --- background ---
+        var bg = CB.AE.addShapeLayer(comp, CB.AE.uniqueLayerName(comp, "Chart BG"));
+        var bgGroup = CB.AE.addGroup(CB.AE.layerContents(bg), "BG");
+        CB.AE.addRect(bgGroup, [ctx.W, ctx.H], [ctx.ox + ctx.W / 2, ctx.oy + ctx.H / 2], 0);
+        CB.AE.addFill(bgGroup, ctx.exprs.bg);
+        bg.parent = ctx.ctrl;
+        ctx.track(bg);
+
+        // --- bands ---
+        var titleBand = (ctx.cfg.title && CB.Util.trim(ctx.cfg.title) !== "") ? Math.round(sizes.title * 1.8) : Math.round(16 * sizes.f);
+        var showLegend = model.seriesNames.length > 1;
+        var legendRowH = Math.round(sizes.legend * 1.6);
+
+        // --- Y tick labels: create + measure to derive the left margin ---
+        var yLabels = [], i, ly, r;
+        var maxYLabelW = 0;
+        for (i = 0; i < yT.ticks.length; i++) {
+            ly = newTextLayer(ctx, CB.Scales.formatTick(yT.ticks[i], yT.decimals),
+                { size: sizes.label }, "Y Label " + CB.Scales.formatTick(yT.ticks[i], yT.decimals));
+            r = CB.AE.measure(ly, t);
+            if (r.width > maxYLabelW) { maxYLabelW = r.width; }
+            yLabels.push(ly);
+        }
+        var plotL = ctx.ox + Math.round(20 * sizes.f) + maxYLabelW + Math.round(14 * sizes.f);
+        var plotR = ctx.ox + ctx.W - Math.round(36 * sizes.f);
+
+        // --- X labels: create + measure to derive the bottom margin ---
+        var xLabels = [];          // { layer, cx } -- centered on tick/category
+        var maxXLabelH = 0;
+        var nCats = 0, slotW = 0;
+
+        if (model.type === "bar") {
+            nCats = model.categories.length;
+            slotW = (plotR - plotL) / Math.max(1, nCats);
+            var boxW = Math.max(30, slotW - Math.round(10 * sizes.f));
+            var maxAllowedH = lineH * 3.4; // ~3 wrapped lines before we call it unreadable
+            var anyUnreadable = false;
+            for (i = 0; i < nCats; i++) {
+                // Real paragraph boxes: long labels wrap instead of colliding.
+                // Box height stays close to the readability ceiling so AE
+                // versions that measure the whole box (instead of tight
+                // text bounds) don't blow up the bottom margin.
+                ly = newTextLayer(ctx, model.categories[i], {
+                    size: sizes.label,
+                    box: [boxW, Math.ceil(lineH * 4.2)],
+                    justification: ParagraphJustification.CENTER_JUSTIFY
+                }, "Cat Label " + model.categories[i]);
+                // Shrink crowded labels -- but only down to a readable minimum.
+                var fs = sizes.label;
+                r = CB.AE.measure(ly, t);
+                while (r.height > maxAllowedH && fs > MIN_CAT_FONT) {
+                    fs = Math.max(MIN_CAT_FONT, fs - 2);
+                    CB.AE.setTextSize(ly, fs);
+                    r = CB.AE.measure(ly, t);
+                }
+                if (r.height > maxAllowedH) { anyUnreadable = true; }
+                if (r.height > maxXLabelH) { maxXLabelH = r.height; }
+                xLabels.push({ layer: ly, cx: plotL + slotW * (i + 0.5) });
+            }
+            if (anyUnreadable) {
+                ctx.warnings.push("Category labels are too long to stay readable even after wrapping and shrinking to " +
+                    MIN_CAT_FONT + "px. Consider shorter labels, fewer categories, or a wider chart.");
+            }
+        } else {
+            var plotWGuess = plotR - plotL;
+            var targetXTicks = CB.Util.clamp(Math.floor(plotWGuess / (140 * sizes.f)) + 1, 2, 10);
+            var xtickDefs = []; // { v, label }
+            if (model.xType === "date") {
+                var dts = CB.Scales.dateTicks(model.xMin, model.xMax, targetXTicks);
+                xtickDefs = dts.ticks;
+            } else {
+                var xtw = CB.Scales.ticksWithin(model.xMin, model.xMax, targetXTicks);
+                for (i = 0; i < xtw.ticks.length; i++) {
+                    xtickDefs.push({ v: xtw.ticks[i], label: CB.Scales.formatTick(xtw.ticks[i], xtw.decimals) });
+                }
+            }
+            ctx.xTickDefs = xtickDefs;
+            for (i = 0; i < xtickDefs.length; i++) {
+                ly = newTextLayer(ctx, xtickDefs[i].label, { size: sizes.label }, "X Label " + xtickDefs[i].label);
+                r = CB.AE.measure(ly, t);
+                if (r.height > maxXLabelH) { maxXLabelH = r.height; }
+                xLabels.push({ layer: ly, def: xtickDefs[i] });
+            }
+        }
+
+        // --- final plot rect ---
+        // Bottom-up: >= one line-height of clear space under the labels,
+        // the labels themselves, a gap, then the axis.
+        var plotB = ctx.oy + ctx.H - lineH - maxXLabelH - Math.round(10 * sizes.f) - tickLen;
+        var plotT = ctx.oy + titleBand + (showLegend ? legendRowH : 0) + Math.round(12 * sizes.f);
+
+        // --- legend (measured text widths, centered, wraps to rows) ---
+        var legendInfo = null;
+        if (showLegend) {
+            legendInfo = buildLegend(ctx, sizes, titleBand, legendRowH, plotL, plotR);
+            plotT = ctx.oy + titleBand + legendInfo.rows * legendRowH + Math.round(12 * sizes.f);
+        }
+
+        if (plotB - plotT < 60 || plotR - plotL < 60) {
+            throw new CB.ValidationError([
+                "The chart area is too small once titles, legends and labels are placed (" +
+                Math.round(plotR - plotL) + "\u00D7" + Math.round(plotB - plotT) +
+                "px). Increase Width/Height or shorten labels."]);
+        }
+
+        var yScale = CB.Scales.linear(yT.min, yT.max, plotB, plotT);
+        var y0 = yScale(CB.Util.clamp(0, yT.min, yT.max));
+
+        // --- gridlines ---
+        var gridLayer = CB.AE.addShapeLayer(comp, CB.AE.uniqueLayerName(comp, "Grid"));
+        var gctn = CB.AE.layerContents(gridLayer);
+        for (i = 0; i < yT.ticks.length; i++) {
+            var gy = yScale(yT.ticks[i]);
+            var gg = CB.AE.addGroup(gctn, "Grid " + CB.Scales.formatTick(yT.ticks[i], yT.decimals));
+            CB.AE.addPath(gg, [[plotL, gy], [plotR, gy]], false);
+            CB.AE.addStroke(gg, ctx.exprs.grid, Math.max(1, Math.round(2 * sizes.f)));
+        }
+        gridLayer.parent = ctx.ctrl;
+        ctx.track(gridLayer);
+
+        // --- axes (Y at plotL; X on the zero baseline for bars, else at plotB) ---
+        var axisLayer = CB.AE.addShapeLayer(comp, CB.AE.uniqueLayerName(comp, "Axes"));
+        var actn = CB.AE.layerContents(axisLayer);
+        var axW = Math.max(2, Math.round(3 * sizes.f));
+        var yAxisG = CB.AE.addGroup(actn, "Y Axis");
+        CB.AE.addPath(yAxisG, [[plotL, plotT], [plotL, plotB]], false);
+        CB.AE.addStroke(yAxisG, ctx.exprs.axis, axW);
+        var xAxisY = (model.type === "bar") ? y0 : plotB;
+        var xAxisG = CB.AE.addGroup(actn, "X Axis (baseline)");
+        CB.AE.addPath(xAxisG, [[plotL, xAxisY], [plotR, xAxisY]], false);
+        CB.AE.addStroke(xAxisG, ctx.exprs.axis, axW);
+
+        // --- X tick marks + label positions ---
+        var xScale = null;
+        if (model.type === "bar") {
+            for (i = 0; i < xLabels.length; i++) {
+                // Category labels: centered beneath the complete bar group.
+                CB.AE.placeLayer(xLabels[i].layer, "center-top",
+                    xLabels[i].cx, plotB + tickLen + Math.round(8 * sizes.f), t);
+            }
+        } else {
+            var xPad = (model.type === "scatter") ? Math.round(16 * sizes.f) : 0;
+            xScale = CB.Scales.linear(model.xMin, model.xMax, plotL + xPad, plotR - xPad);
+            for (i = 0; i < xLabels.length; i++) {
+                var tx = xScale(xLabels[i].def.v);
+                var tickG = CB.AE.addGroup(actn, "Tick " + xLabels[i].def.label);
+                CB.AE.addPath(tickG, [[tx, plotB], [tx, plotB + tickLen]], false);
+                CB.AE.addStroke(tickG, ctx.exprs.axis, Math.max(1, Math.round(2 * sizes.f)));
+                // X labels centered on their ticks.
+                CB.AE.placeLayer(xLabels[i].layer, "center-top",
+                    tx, plotB + tickLen + Math.round(8 * sizes.f), t);
+            }
+        }
+        axisLayer.parent = ctx.ctrl;
+        ctx.track(axisLayer);
+
+        // --- Y labels vertically centered on their gridlines ---
+        for (i = 0; i < yLabels.length; i++) {
+            CB.AE.placeLayer(yLabels[i], "right-centerY",
+                plotL - Math.round(12 * sizes.f), yScale(yT.ticks[i]), t);
+        }
+
+        // --- title centered in its header band ---
+        if (ctx.cfg.title && CB.Util.trim(ctx.cfg.title) !== "") {
+            var titleLayer = newTextLayer(ctx, ctx.cfg.title, { size: sizes.title }, "Title");
+            CB.AE.placeLayer(titleLayer, "center", ctx.ox + ctx.W / 2, ctx.oy + titleBand / 2, t);
+        }
+
+        return {
+            plotL: plotL, plotR: plotR, plotT: plotT, plotB: plotB,
+            yScale: yScale, y0: y0, yTicks: yT,
+            xScale: xScale,
+            slotW: slotW,
+            sizes: sizes,
+            catX: function (ci) { return plotL + slotW * (ci + 0.5); }
+        };
+    }
+
+    // Legend: marker + measured label per series, packed into centered rows.
+    // Returns { rows } so the caller can reserve vertical space.
+    function buildLegend(ctx, sizes, titleBand, rowH, plotL, plotR) {
+        var model = ctx.model;
+        var comp = ctx.comp;
+        var t = comp.time;
+        var markerSize = Math.round(18 * sizes.f);
+        var gapMT = Math.round(8 * sizes.f);   // marker-to-text
+        var gapItem = Math.round(30 * sizes.f); // item-to-item
+
+        var texts = [], widths = [], i, r;
+        for (i = 0; i < model.seriesNames.length; i++) {
+            var ly = newTextLayer(ctx, model.seriesNames[i], { size: sizes.legend },
+                "Legend " + model.seriesNames[i]);
+            r = CB.AE.measure(ly, t);
+            texts.push(ly);
+            widths.push(markerSize + gapMT + r.width);
+        }
+
+        // Pack into rows no wider than the chart's usable width.
+        var maxRowW = ctx.W - Math.round(80 * sizes.f);
+        var rows = [];      // arrays of indices
+        var rowWidths = [];
+        var cur = [], curW = 0;
+        for (i = 0; i < widths.length; i++) {
+            var addW = widths[i] + (cur.length ? gapItem : 0);
+            if (cur.length && curW + addW > maxRowW) {
+                rows.push(cur); rowWidths.push(curW);
+                cur = [i]; curW = widths[i];
+            } else {
+                cur.push(i); curW += addW;
+            }
+        }
+        if (cur.length) { rows.push(cur); rowWidths.push(curW); }
+
+        var markerLayer = CB.AE.addShapeLayer(comp, CB.AE.uniqueLayerName(comp, "Legend Markers"));
+        var mctn = CB.AE.layerContents(markerLayer);
+
+        var ri, k, x, cy, idx;
+        for (ri = 0; ri < rows.length; ri++) {
+            x = ctx.ox + (ctx.W - rowWidths[ri]) / 2;
+            cy = ctx.oy + titleBand + rowH * ri + rowH / 2;
+            for (k = 0; k < rows[ri].length; k++) {
+                idx = rows[ri][k];
+                // Text first: the marker is then centered against the
+                // text's measured vertical center.
+                CB.AE.placeLayer(texts[idx], "left-centerY", x + markerSize + gapMT, cy, t);
+                r = CB.AE.measure(texts[idx], t);
+                var textCenterY = texts[idx].transform.position.value[1] + r.top + r.height / 2;
+                var mg = CB.AE.addGroup(mctn, "Marker " + model.seriesNames[idx]);
+                if (model.type === "bar") {
+                    CB.AE.addRect(mg, [markerSize, markerSize], [x + markerSize / 2, textCenterY], Math.round(markerSize * 0.15));
+                } else {
+                    CB.AE.addEllipse(mg, [markerSize, markerSize], [x + markerSize / 2, textCenterY]);
+                }
+                CB.AE.addFill(mg, ctx.exprs.series(idx));
+                x += widths[idx] + gapItem;
+            }
+        }
+        markerLayer.parent = ctx.ctrl;
+        ctx.track(markerLayer);
+        return { rows: rows.length };
+    }
+
+    return { build: build, fontSizes: fontSizes, MIN_CAT_FONT: MIN_CAT_FONT };
+})();

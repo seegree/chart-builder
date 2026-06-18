@@ -1,0 +1,35 @@
+/*
+ * Chart Builder -- chart configuration persistence.
+ * The full chart config (CSV path, mappings, type, size, theme, animation)
+ * is serialized into the controller null's layer comment, so any chart can
+ * be re-identified and refreshed later -- and remains a plain, fully
+ * editable AE layer tree if the panel is never installed again.
+ */
+if (typeof CB === "undefined") { var CB = {}; }
+
+CB.Persist = (function () {
+
+    var PREFIX = "CB_CHART_V1::";
+
+    function encode(cfg) {
+        return PREFIX + CB.JSONX.stringify(cfg);
+    }
+
+    // -> config object or null when the comment is not a Chart Builder config.
+    function decode(comment) {
+        if (!comment || String(comment).indexOf(PREFIX) !== 0) { return null; }
+        try {
+            var cfg = CB.JSONX.parse(String(comment).substring(PREFIX.length));
+            if (!cfg || typeof cfg !== "object" || !cfg.type) { return null; }
+            return cfg;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    function isChartComment(comment) {
+        return decode(comment) !== null;
+    }
+
+    return { PREFIX: PREFIX, encode: encode, decode: decode, isChartComment: isChartComment };
+})();

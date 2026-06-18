@@ -1,0 +1,408 @@
+/*
+ * Chart Builder -- chart data models.
+ * Turns a parsed CSV table + column mapping into a validated, render-ready
+ * model. All validation happens here, BEFORE any layer is created, so a
+ * failed validation never leaves a partial chart behind.
+ *
+ * table: { headers, rows, rowLines } from CB.CSV.parse
+ * mapping: { role: headerName | null }
+ */
+if (typeof CB === "undefined") { var CB = {}; }
+
+CB.Model = (function () {
+
+    var MAX_ERRORS_LISTED = 8;
+
+    function colIndex(table, header) {
+        return CB.Util.indexOf(table.headers, header);
+    }
+
+    function lineRef(table, rowIdx) {
+        return "line " + table.rowLines[rowIdx];
+    }
+
+    function capList(list) {
+        if (list.length > MAX_ERRORS_LISTED) {
+            var extra = list.length - MAX_ERRORS_LISTED;
+            list = list.slice(0, MAX_ERRORS_LISTED);
+            list.push("\u2026and " + extra + " more problem" + (extra === 1 ? "" : "s") + " like these.");
+        }
+        return list;
+    }
+
+    // Resolve mapping headers to column indexes; collects missing-column and
+    // duplicate-mapping errors. fields from CB.Mapping.FIELDS[type].
+    function resolveColumns(table, mapping, fields, errors) {
+        var idx = {};
+        var usedBy = {};
+        var i, f, h, ci;
+        for (i = 0; i < fields.length; i++) {
+            f = fields[i];
+            h = mapping[f.key];
+            if (h === null || h === undefined || h === "") {
+                idx[f.key] = -1;
+                if (f.required) {
+                    errors.push("Required mapping \"" + f.label + "\" is not set.");
+                }
+                continue;
+            }
+            ci = colIndex(table, h);
+            if (ci === -1) {
+                errors.push("Mapped column \"" + h + "\" (" + f.label + ") does not exist in the CSV. " +
+                    "Available headers: " + table.headers.join(", ") + ".");
+                idx[f.key] = -1;
+                continue;
+            }
+            if (usedBy.hasOwnProperty(ci)) {
+                errors.push("Column \"" + h + "\" is mapped to both " + usedBy[ci] + " and " + f.label +
+                    ". Each column may fill only one role.");
+            } else {
+                usedBy[ci] = f.label;
+            }
+            idx[f.key] = ci;
+        }
+        return idx;
+    }
+
+    function numericColumn(table, ci, roleLabel, errors) {
+        var out = [];
+        var bad = [];
+        var i, v;
+        for (i = 0; i < table.rows.length; i++) {
+            v = CB.Util.parseNumber(table.rows[i][ci]);
+            if (v === null) {
+                bad.push(roleLabel + " value \"" + table.rows[i][ci] + "\" at " + lineRef(table, i) + " is not numeric.");
+            }
+            out.push(v);
+        }
+        var capped = capList(bad);
+        for (i = 0; i < capped.length; i++) { errors.push(capped[i]); }
+        return out;
+    }
+
+    // X columns may be all-numeric or all-ISO-date. -> { type, values }
+    function xColumn(table, ci, errors) {
+        var raw = [], i;
+        for (i = 0; i < table.rows.length; i++) { raw.push(table.rows[i][ci]); }
+
+        var numeric = true, dates = true;
+        for (i = 0; i < raw.length; i++) {
+            if (CB.Util.parseNumber(raw[i]) === null) { numeric = false; }
+            if (CB.Dates.parseISO(raw[i]) === null) { dates = false; }
+            if (!numeric && !dates) { break; }
+        }
+        var values = [];
+        if (numeric) {
+            for (i = 0; i < raw.length; i++) { values.push(CB.Util.parseNumber(raw[i])); }
+            return { type: "number", values: values };
+        }
+        if (dates) {
+            for (i = 0; i < raw.length; i++) { values.push(CB.Dates.parseISO(raw[i])); }
+            return { type: "date", values: values };
+        }
+        var bad = [];
+        for (i = 0; i < raw.length; i++) {
+            if (CB.Util.parseNumber(raw[i]) === null && CB.Dates.parseISO(raw[i]) === null) {
+                bad.push("X value \"" + raw[i] + "\" at " + lineRef(table, i) +
+                    " is neither numeric nor a valid ISO date (YYYY-MM-DD).");
+            }
+        }
+        if (bad.length === 0) {
+            bad.push("X column mixes numbers and dates - it must be entirely one or the other.");
+        }
+        var capped = capList(bad);
+        for (i = 0; i < capped.length; i++) { errors.push(capped[i]); }
+        return { type: "invalid", values: [] };
+    }
+
+    function textColumn(table, ci, roleLabel, allowEmpty, errors) {
+        var out = [], bad = [], i, v;
+        for (i = 0; i < table.rows.length; i++) {
+            v = CB.Util.trim(table.rows[i][ci]);
+            if (v === "" && !allowEmpty) {
+                bad.push(roleLabel + " is empty at " + lineRef(table, i) + ".");
+            }
+            out.push(v);
+        }
+        var capped = capList(bad);
+        for (i = 0; i < capped.length; i++) { errors.push(capped[i]); }
+        return out;
+    }
+
+    function firstAppearanceList() {
+        var order = [];
+        var index = {};
+        return {
+            add: function (name) {
+                var k = "" + name; // avoid prototype-key collisions
+                if (!index.hasOwnProperty(k)) {
+                    index[k] = order.length;
+                    order.push(name);
+                }
+                return index[k];
+            },
+            list: order
+        };
+    }
+
+    function finish(errors) {
+        if (errors.length) { throw new CB.ValidationError(errors); }
+    }
+
+    // --- BAR ---------------------------------------------------------------
+
+    function buildBar(table, mapping) {
+        var errors = [];
+        var idx = resolveColumns(table, mapping, CB.Mapping.FIELDS.bar, errors);
+        finish(errors);
+
+        var cats = textColumn(table, idx.category, "Category", false, errors);
+        var vals = numericColumn(table, idx.value, "Value", errors);
+        var hasSeries = idx.series !== -1;
+        var sers = hasSeries
+            ? textColumn(table, idx.series, "Series", false, errors)
+            : null;
+        finish(errors);
+
+        var catList = firstAppearanceList();
+        var serList = firstAppearanceList();
+        var bars = [];
+        var seenCombo = {};
+        var dupErrors = [];
+        var i, ci, si, comboKey, serName;
+
+        for (i = 0; i < table.rows.length; i++) {
+            serName = hasSeries ? sers[i] : table.headers[idx.value];
+            ci = catList.add(cats[i]);
+            si = serList.add(serName);
+            comboKey = cats[i] + "\u0001" + serName;
+            if (seenCombo.hasOwnProperty(comboKey)) {
+                dupErrors.push("Duplicate bar at " + lineRef(table, i) + ": Category \"" + cats[i] + "\"" +
+                    (hasSeries ? " + Series \"" + serName + "\"" : "") +
+                    " already appeared at line " + seenCombo[comboKey] +
+                    ". Each Category" + (hasSeries ? "+Series combination" : "") +
+                    " may appear only once - bars are never silently overlapped.");
+            } else {
+                seenCombo[comboKey] = table.rowLines[i];
+            }
+            bars.push({ category: cats[i], series: serName, value: vals[i], ci: ci, si: si });
+        }
+        var capped = capList(dupErrors);
+        for (i = 0; i < capped.length; i++) { errors.push(capped[i]); }
+        finish(errors);
+
+        var yMin = 0, yMax = 0;
+        for (i = 0; i < bars.length; i++) {
+            if (bars[i].value < yMin) { yMin = bars[i].value; }
+            if (bars[i].value > yMax) { yMax = bars[i].value; }
+        }
+        if (yMin === 0 && yMax === 0) { yMax = 1; } // all-zero data still draws a frame
+
+        return {
+            type: "bar",
+            categories: catList.list,
+            seriesNames: serList.list,
+            hasSeriesMapping: hasSeries,
+            bars: bars,
+            yMin: yMin,
+            yMax: yMax,
+            warnings: []
+        };
+    }
+
+    // --- LINE / SCATTER shared point grouping -------------------------------
+
+    function groupPoints(table, idx, hasSeries, errors, opts) {
+        // opts: { rejectDuplicateX: bool, labelIdx: -1|n }
+        var xs = xColumn(table, idx.x, errors);
+        var ys = numericColumn(table, idx.y, "Y", errors);
+        var sers = hasSeries ? textColumn(table, idx.series, "Series", false, errors) : null;
+        var labels = (opts.labelIdx !== undefined && opts.labelIdx !== -1)
+            ? textColumn(table, opts.labelIdx, "Point label", true, errors)
+            : null;
+        finish(errors);
+
+        var serList = firstAppearanceList();
+        var groups = {}; // ""+name -> { name, points }
+        var order = [];
+        var i, name, key, g;
+        for (i = 0; i < table.rows.length; i++) {
+            name = hasSeries ? sers[i] : "Series";
+            key = "" + name;
+            serList.add(name);
+            if (!groups.hasOwnProperty(key)) {
+                groups[key] = { name: name, points: [] };
+                order.push(key);
+            }
+            groups[key].points.push({
+                x: xs.values[i],
+                y: ys[i],
+                label: labels ? labels[i] : "",
+                line: table.rowLines[i]
+            });
+        }
+
+        if (opts.rejectDuplicateX) {
+            var dupErrors = [];
+            for (i = 0; i < order.length; i++) {
+                g = groups[order[i]];
+                var seenX = {}, j, xk;
+                for (j = 0; j < g.points.length; j++) {
+                    xk = "" + g.points[j].x;
+                    if (seenX.hasOwnProperty(xk)) {
+                        if (!hasSeries) {
+                            dupErrors.push("Repeated X value " + fmtX(g.points[j].x, xs.type) +
+                                " at line " + g.points[j].line + " (first used at line " + seenX[xk] + "). " +
+                                "When rows share an X value you must map a Series column so each line stays unambiguous.");
+                        } else {
+                            dupErrors.push("Series \"" + g.name + "\" has a repeated X value " +
+                                fmtX(g.points[j].x, xs.type) + " at line " + g.points[j].line +
+                                " (first used at line " + seenX[xk] + "). Each series may have only one Y per X.");
+                        }
+                    } else {
+                        seenX[xk] = g.points[j].line;
+                    }
+                }
+            }
+            var capped = capList(dupErrors);
+            for (i = 0; i < capped.length; i++) { errors.push(capped[i]); }
+            finish(errors);
+        }
+
+        var series = [];
+        for (i = 0; i < order.length; i++) { series.push(groups[order[i]]); }
+        return { series: series, seriesNames: serList.list, xType: xs.type };
+    }
+
+    function fmtX(v, xType) {
+        return xType === "date" ? '"' + CB.Dates.formatISO(v) + '"' : '"' + v + '"';
+    }
+
+    function extent(series) {
+        var xMin = Infinity, xMax = -Infinity, yMin = Infinity, yMax = -Infinity;
+        var i, j, p;
+        for (i = 0; i < series.length; i++) {
+            for (j = 0; j < series[i].points.length; j++) {
+                p = series[i].points[j];
+                if (p.x < xMin) { xMin = p.x; }
+                if (p.x > xMax) { xMax = p.x; }
+                if (p.y < yMin) { yMin = p.y; }
+                if (p.y > yMax) { yMax = p.y; }
+            }
+        }
+        return { xMin: xMin, xMax: xMax, yMin: yMin, yMax: yMax };
+    }
+
+    function sortByX(series) {
+        var i;
+        for (i = 0; i < series.length; i++) {
+            series[i].points.sort(function (a, b) { return a.x - b.x; });
+        }
+    }
+
+    // --- LINE ----------------------------------------------------------------
+
+    function buildLine(table, mapping) {
+        var errors = [];
+        var idx = resolveColumns(table, mapping, CB.Mapping.FIELDS.line, errors);
+        finish(errors);
+
+        var hasSeries = idx.series !== -1;
+        var grouped = groupPoints(table, idx, hasSeries, errors, { rejectDuplicateX: true, labelIdx: -1 });
+        sortByX(grouped.series);
+
+        var i;
+        for (i = 0; i < grouped.series.length; i++) {
+            if (grouped.series[i].points.length < 2) {
+                errors.push("Series \"" + grouped.series[i].name + "\" has only " +
+                    grouped.series[i].points.length + " point - a line needs at least 2.");
+            }
+        }
+        finish(errors);
+
+        var ext = extent(grouped.series);
+        return {
+            type: "line",
+            seriesNames: grouped.seriesNames,
+            hasSeriesMapping: hasSeries,
+            series: grouped.series,
+            xType: grouped.xType,
+            xMin: ext.xMin, xMax: ext.xMax,
+            yMin: ext.yMin, yMax: ext.yMax,
+            warnings: []
+        };
+    }
+
+    // --- SCATTER --------------------------------------------------------------
+
+    // mapping additionally carries trend: 'none' | 'overall' | 'per-series'
+    function buildScatter(table, mapping) {
+        var errors = [];
+        var idx = resolveColumns(table, mapping, CB.Mapping.FIELDS.scatter, errors);
+        finish(errors);
+
+        var hasSeries = idx.series !== -1;
+        var grouped = groupPoints(table, idx, hasSeries, errors, {
+            rejectDuplicateX: false,
+            labelIdx: idx.label
+        });
+
+        var warnings = [];
+        var trend = mapping.trend || "none";
+        var fits = [];
+        var i, fit, all, j;
+
+        if (trend === "overall") {
+            all = [];
+            for (i = 0; i < grouped.series.length; i++) {
+                for (j = 0; j < grouped.series[i].points.length; j++) {
+                    all.push(grouped.series[i].points[j]);
+                }
+            }
+            fit = CB.Regression.ols(all);
+            if (fit) {
+                fits.push({ name: "Overall", seriesIndex: -1, fit: fit });
+            } else {
+                warnings.push("Overall trend line skipped: a least-squares fit needs at least 2 points with varying X.");
+            }
+        } else if (trend === "per-series") {
+            for (i = 0; i < grouped.series.length; i++) {
+                fit = CB.Regression.ols(grouped.series[i].points);
+                if (fit) {
+                    fits.push({ name: grouped.series[i].name, seriesIndex: i, fit: fit });
+                } else {
+                    warnings.push("Trend line for series \"" + grouped.series[i].name +
+                        "\" skipped: it needs at least 2 points with varying X.");
+                }
+            }
+        }
+
+        var ext = extent(grouped.series);
+        return {
+            type: "scatter",
+            seriesNames: grouped.seriesNames,
+            hasSeriesMapping: hasSeries,
+            series: grouped.series,
+            xType: grouped.xType,
+            xMin: ext.xMin, xMax: ext.xMax,
+            yMin: ext.yMin, yMax: ext.yMax,
+            trend: trend,
+            fits: fits,
+            warnings: warnings
+        };
+    }
+
+    function build(type, table, mapping) {
+        if (type === "bar") { return buildBar(table, mapping); }
+        if (type === "line") { return buildLine(table, mapping); }
+        if (type === "scatter") { return buildScatter(table, mapping); }
+        throw new CB.ValidationError(["Unsupported chart type \"" + type + "\"."]);
+    }
+
+    return {
+        build: build,
+        buildBar: buildBar,
+        buildLine: buildLine,
+        buildScatter: buildScatter
+    };
+})();

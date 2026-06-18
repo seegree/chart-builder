@@ -1,0 +1,103 @@
+/*
+ * Chart Builder -- scatter renderer.
+ * One shape group per observation (scale + opacity pop-in), optional text
+ * labels, and OLS trend lines (overall or per series) that draw on after
+ * the points and are clipped to the plot bounds. R^2 is shown in each
+ * trend layer's name.
+ */
+if (typeof CB === "undefined") { var CB = {}; }
+
+CB.RendererScatter = (function () {
+
+    function build(ctx, layout) {
+        var model = ctx.model;
+        var t0 = ctx.cfg.animStart;
+        var dur = Math.max(0.1, ctx.cfg.anim.duration);
+        var stagger = Math.max(0, ctx.cfg.anim.stagger);
+        var pointD = Math.max(8, Math.round(20 * layout.sizes.f));
+        var popDur = Math.max(0.2, dur * 0.25);
+
+        var labelSize = Math.max(9, Math.round(layout.sizes.label * 0.85));
+        var globalIdx = 0;
+        var lastRevealEnd = t0;
+
+        var si, series, i, p, px, py;
+        for (si = 0; si < model.series.length; si++) {
+            series = model.series[si];
+            var pointLayer = CB.AE.addShapeLayer(ctx.comp,
+                CB.AE.uniqueLayerName(ctx.comp, "Points \u25B8 " + series.name));
+            var pctn = CB.AE.layerContents(pointLayer);
+
+            for (i = 0; i < series.points.length; i++) {
+                p = series.points[i];
+                px = layout.xScale(p.x);
+                py = layout.yScale(p.y);
+
+                var g = CB.AE.addGroup(pctn, "Obs " + (i + 1) +
+                    (p.label ? " \u25B8 " + p.label : ""));
+                CB.AE.addEllipse(g, [pointD, pointD], [0, 0]);
+                CB.AE.addFill(g, ctx.exprs.series(si), 90);
+
+                var gt = CB.AE.groupTransform(g);
+                gt.property("ADBE Vector Position").setValue([px, py]);
+
+                var tStart = t0 + globalIdx * stagger;
+                CB.AE.setEasedKeys(gt.property("ADBE Vector Scale"),
+                    tStart, [0, 0], tStart + popDur, [100, 100]);
+                CB.AE.setEasedKeys(gt.property("ADBE Vector Group Opacity"),
+                    tStart, 0, tStart + popDur, 100);
+                if (tStart + popDur > lastRevealEnd) { lastRevealEnd = tStart + popDur; }
+
+                if (p.label) {
+                    var tl = CB.AE.addText(ctx.comp, p.label, { size: labelSize });
+                    tl.name = CB.AE.uniqueLayerName(ctx.comp, "Label \u25B8 " + p.label);
+                    CB.AE.bindTextColor(tl, ctx.exprs.text);
+                    // Centered above the point, measured -- never guessed.
+                    CB.AE.placeLayer(tl, "center", px,
+                        py - pointD / 2 - labelSize * 0.75, ctx.comp.time);
+                    var op = tl.transform.opacity;
+                    CB.AE.setEasedKeys(op, tStart, 0, tStart + popDur, 100);
+                    tl.parent = ctx.ctrl;
+                    ctx.track(tl);
+                }
+                globalIdx++;
+            }
+            pointLayer.parent = ctx.ctrl;
+            ctx.track(pointLayer);
+        }
+
+        // --- trend lines: draw on after the points, clipped to the plot ---
+        var trendDur = Math.max(0.3, dur * 0.5);
+        var fi;
+        for (fi = 0; fi < model.fits.length; fi++) {
+            var f = model.fits[fi];
+            // Endpoints in data space across the full X extent, then clipped
+            // to the plot rect in pixel space.
+            var x1 = layout.xScale(model.xMin), y1 = layout.yScale(f.fit.slope * model.xMin + f.fit.intercept);
+            var x2 = layout.xScale(model.xMax), y2 = layout.yScale(f.fit.slope * model.xMax + f.fit.intercept);
+            var seg = CB.Regression.clipSegment(x1, y1, x2, y2, {
+                l: layout.plotL, t: layout.plotT, r: layout.plotR, b: layout.plotB
+            });
+            if (!seg) {
+                ctx.warnings.push("Trend line \"" + f.name + "\" lies entirely outside the plot area and was skipped.");
+                continue;
+            }
+            var r2Label = Math.round(f.fit.r2 * 1000) / 1000;
+            var trendLayer = CB.AE.addShapeLayer(ctx.comp, CB.AE.uniqueLayerName(ctx.comp,
+                "Trend \u25B8 " + f.name + " (R\u00B2=" + r2Label + ")"));
+            var tg = CB.AE.addGroup(CB.AE.layerContents(trendLayer), "Fit");
+            CB.AE.addPath(tg, [[seg.x1, seg.y1], [seg.x2, seg.y2]], false);
+            CB.AE.addStroke(tg,
+                f.seriesIndex === -1 ? ctx.exprs.axis : ctx.exprs.series(f.seriesIndex),
+                Math.max(2, Math.round(5 * layout.sizes.f)),
+                { dashes: [Math.round(18 * layout.sizes.f), Math.round(12 * layout.sizes.f)] });
+            var trim = CB.AE.addTrimPaths(trendLayer);
+            CB.AE.setEasedKeys(trim.property("ADBE Vector Trim End"),
+                lastRevealEnd, 0, lastRevealEnd + trendDur, 100);
+            trendLayer.parent = ctx.ctrl;
+            ctx.track(trendLayer);
+        }
+    }
+
+    return { build: build };
+})();
