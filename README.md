@@ -125,7 +125,7 @@ Select a chart's controller **or any one of its child layers** and press
 | Midnight | dark UI-style palette |
 | Light | white background, saturated accents |
 | Editorial | warm paper background, muted inks |
-| MathWorks | `#001C47` bg, `#FFFFFF` text, `#005487` grid, `#00A9E0` axis, series `#0076A8 #00A9E0 #B7312C #715091 #48A23F #D78825` |
+| Tech | deep navy with cyan accents: `#001C47` bg, `#FFFFFF` text, `#005487` grid, `#00A9E0` axis, series `#0076A8 #00A9E0 #B7312C #715091 #48A23F #D78825` |
 
 Swatches for background/text/grid/axis/series show inline next to the Theme
 dropdown. Themes only set the *initial* Color Control values — recolor any

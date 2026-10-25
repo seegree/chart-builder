@@ -70,7 +70,7 @@ CB.Themes = (function () {
             series: ["#C84B31", "#2D6A4F", "#1D3557", "#B08968", "#6D597A", "#E9C46A"]
         },
         {
-            name: "MathWorks",
+            name: "Tech",
             bg: "#001C47", text: "#FFFFFF", grid: "#005487", axis: "#00A9E0",
             series: ["#0076A8", "#00A9E0", "#B7312C", "#715091", "#48A23F", "#D78825"]
         }

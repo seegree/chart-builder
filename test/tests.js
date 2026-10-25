@@ -179,13 +179,13 @@ eq([clip.y1, clip.y2], [0, 100], "clip vertical");
 
 // --- Themes -----------------------------------------------------------------
 section("Themes");
-eq(CB.Themes.names(), ["Midnight", "Light", "Editorial", "MathWorks"], "theme names");
-var mw = CB.Themes.byName("MathWorks");
-eq(CB.Colors.rgbToHex(CB.Colors.hexToRgb(mw.bg)), "#001C47", "MathWorks bg");
-eq(mw.text, "#FFFFFF", "MathWorks text");
-eq(mw.grid, "#005487", "MathWorks grid");
-eq(mw.axis, "#00A9E0", "MathWorks axis");
-eq(mw.series, ["#0076A8", "#00A9E0", "#B7312C", "#715091", "#48A23F", "#D78825"], "MathWorks series palette");
+eq(CB.Themes.names(), ["Midnight", "Light", "Editorial", "Tech"], "theme names");
+var mw = CB.Themes.byName("Tech");
+eq(CB.Colors.rgbToHex(CB.Colors.hexToRgb(mw.bg)), "#001C47", "Tech bg");
+eq(mw.text, "#FFFFFF", "Tech text");
+eq(mw.grid, "#005487", "Tech grid");
+eq(mw.axis, "#00A9E0", "Tech axis");
+eq(mw.series, ["#0076A8", "#00A9E0", "#B7312C", "#715091", "#48A23F", "#D78825"], "Tech series palette");
 eq(CB.Colors.hexToRgb("#FF0000"), [1, 0, 0], "hexToRgb red");
 eq(CB.Colors.rgbToHex([0, 0.5019607843137255, 1]), "#0080FF", "rgbToHex");
 // generated colors beyond the palette: distinct from each other and defined
@@ -333,7 +333,7 @@ section("Persist");
 var cfg = {
     v: 1, id: "abc123", type: "scatter", title: "My \"Chart\"",
     csv: "/tmp/weird path/data, more.csv",
-    width: 1600, height: 800, theme: "MathWorks",
+    width: 1600, height: 800, theme: "Tech",
     mapping: { x: "Date", y: "Value", series: null, label: null, trend: "overall" },
     anim: { duration: 2, stagger: 0.1 },
     animStart: 1.5, origin: [160, 140], seriesCount: 3
